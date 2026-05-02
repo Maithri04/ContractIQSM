@@ -1,0 +1,44 @@
+"""
+llm/prompt_template.py
+
+ADD these two functions to your existing prompt_template.py file.
+Do NOT replace the whole file — just append these functions.
+"""
+
+
+def build_scenario_prompt(context: str) -> str:
+    return f"""You are a legal contract analyst AI.
+
+Analyze the following contract text and generate exactly 7 to 10 If-Then scenarios.
+Each scenario must:
+- Start with "If ..."
+- Use the arrow symbol → to separate condition from consequence
+- Be specific to the actual clauses in this contract
+- Focus on: penalty, termination, liability, resignation, breach, notice period
+
+Format: one scenario per line, no numbering, no bullets.
+Example format:
+If the employee resigns before completing 12 months → they must pay ₹75,000 as penalty
+If the company terminates without cause → no penalty is charged to the employee
+
+CONTRACT TEXT:
+{context}
+
+Generate the scenarios now:"""
+
+
+def build_scenario_qa_prompt(question: str, context: str) -> str:
+    return f"""You are a legal contract expert AI assistant.
+
+A user is asking a "what-if" question about their contract.
+Answer ONLY based on the contract text provided below.
+Be specific, concise (2-4 sentences), and cite the relevant clause if possible.
+If the answer is not in the contract, say so clearly.
+
+CONTRACT TEXT:
+{context}
+
+USER QUESTION:
+{question}
+
+ANSWER:"""

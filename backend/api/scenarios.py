@@ -1,0 +1,86 @@
+"""
+api/scenarios.py
+
+POST /api/scenarios
+Accepts a single PDF contract, extracts conditional clauses,
+and returns clickable scenario questions + answers for the frontend.
+"""
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from loguru import logger
+from pydantic import BaseModel
+from typing import List, Dict, Any
+
+from services.scenario_generator import generate_scenarios
+from utils.file_handler import save_upload, delete_file
+from llm.generator import llm_generator
+
+router = APIRouter(prefix="/api", tags=["scenarios"])
+
+
+@router.post("/scenarios", summary="Generate interactive scenario Q&A from contract")
+async def scenarios_endpoint(
+    file: UploadFile = File(..., description="PDF or Image contract to generate scenarios from"),
+):
+    """
+    Generate scenario-based questions and answers from a contract.
+
+    Returns
+    -------
+    JSON with:
+    - questions: list of clickable question strings
+    - answers: dict mapping each question to its plain-English answer
+    - ui_text: intro text for the frontend section header
+    """
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    allowed_exts = {"pdf", "jpg", "jpeg", "png", "webp", "tiff", "bmp"}
+    if ext not in allowed_exts:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Only PDF and Image files are supported. Got: {file.filename}",
+        )
+
+    path = await save_upload(file, subfolder="pdfs")
+    logger.info(f"[SCENARIOS] Saved: {path.name}")
+
+    try:
+        result = await run_in_threadpool(generate_scenarios, path)
+    except Exception as exc:
+        logger.exception(f"[SCENARIOS] Pipeline error: {exc}")
+        delete_file(path)
+        raise HTTPException(status_code=500, detail=f"Scenario generation failed: {exc}")
+
+    if not result["success"]:
+        delete_file(path)
+        raise HTTPException(status_code=422, detail=result["ui_text"])
+
+    return result
+
+class ScenarioQuestionRequest(BaseModel):
+    question: str
+    context_chunks: List[Dict[str, Any]] = []
+
+@router.post("/scenario-question", summary="Ask a specific scenario question")
+async def scenario_question_endpoint(req: ScenarioQuestionRequest):
+    try:
+        context_text = "\n\n".join([c.get("text", "") for c in req.context_chunks])
+        # If no chunks, fallback
+        if not context_text:
+            context_text = "No contract context provided."
+
+        prompt = (
+            "You are a helpful legal assistant. Answer the user's scenario-based question "
+            "using ONLY the following contract excerpts. Keep the answer to 1-2 sentences. "
+            "If the answer is not in the excerpts, say 'I cannot determine that from the provided text.'\n\n"
+            f"Contract Excerpts:\n{context_text}"
+        )
+        
+        answer = await run_in_threadpool(
+            llm_generator.generate,
+            context=context_text,
+            question=prompt + f"\n\nQuestion: {req.question}"
+        )
+        return {"answer": answer}
+    except Exception as exc:
+        logger.exception(f"[SCENARIOS] Q&A failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))

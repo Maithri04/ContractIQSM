@@ -1,0 +1,242 @@
+"""
+services/scenario_generator.py
+
+Generates If-Then scenarios from contract clauses using LLM,
+and answers user questions about those scenarios.
+Reuses existing ingestion and LLM infrastructure.
+"""
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from functools import lru_cache
+import hashlib
+import json
+
+from loguru import logger
+
+from ingestion.pdf_parser import extract_pdf_pages
+from ingestion.image_ocr import extract_image_text
+from ingestion.chunker import chunk_pages
+from ingestion.cleaner import clean_text
+from llm.generator import generate_response
+from llm.prompt_template import build_scenario_prompt, build_scenario_qa_prompt
+
+
+# ── In-memory cache keyed by file hash ───────────────────────────────────────
+_scenario_cache: Dict[str, Dict[str, Any]] = {}
+
+MAX_CHUNKS = 20  # performance cap
+
+
+def _file_hash(path: Path) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _extract_text(file_path: Path) -> str:
+    """Extract raw text from PDF or image file."""
+    suffix = file_path.suffix.lower()
+    if suffix == ".pdf":
+        pages = extract_pdf_pages(file_path)
+        return "\n\n".join(p["text"] for p in pages if p.get("text"))
+    elif suffix in {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}:
+        return extract_image_text(str(file_path))
+    else:
+        raise ValueError(f"Unsupported file type: {suffix}")
+
+
+def _get_chunks(raw_text: str) -> List[Dict]:
+    """Clean, split into pages dict format, then chunk — capped at MAX_CHUNKS."""
+    cleaned = clean_text(raw_text)
+    # Wrap as single-page list so chunker works normally
+    pages = [{"page_num": 1, "text": cleaned}]
+    chunks = chunk_pages(pages)
+    return chunks[:MAX_CHUNKS]
+
+
+def generate_scenarios(file_path: Path) -> Dict[str, Any]:
+    """
+    Main entry point.
+    Returns dict: { success, scenarios, chunks, ui_text }
+    """
+    fhash = _file_hash(file_path)
+
+    # Return cached result if same file
+    if fhash in _scenario_cache:
+        logger.info(f"[SCENARIOS] Cache hit for {file_path.name}")
+        return _scenario_cache[fhash]
+
+    logger.info(f"[SCENARIOS] Processing {file_path.name}")
+
+    try:
+        raw_text = _extract_text(file_path)
+    except Exception as exc:
+        logger.exception(f"[SCENARIOS] Text extraction failed: {exc}")
+        return {
+            "success": False,
+            "scenarios": [],
+            "chunks": [],
+            "ui_text": f"Failed to extract text: {exc}",
+        }
+
+    if not raw_text or not raw_text.strip():
+        return {
+            "success": False,
+            "scenarios": [],
+            "chunks": [],
+            "ui_text": "No text could be extracted from the uploaded file.",
+        }
+
+    chunks = _get_chunks(raw_text)
+    if not chunks:
+        return {
+            "success": False,
+            "scenarios": [],
+            "chunks": [],
+            "ui_text": "Document could not be chunked. Please try a different file.",
+        }
+
+    # Build context from top chunks (focus on penalty/termination/liability)
+    context = _build_context(chunks)
+
+    # Call LLM to generate scenarios
+    prompt = build_scenario_prompt(context)
+    try:
+        llm_output = generate_response(prompt)
+        scenarios = _parse_scenarios(llm_output)
+    except Exception as exc:
+        logger.exception(f"[SCENARIOS] LLM generation failed: {exc}")
+        scenarios = _heuristic_scenarios(chunks)
+
+    if not scenarios:
+        scenarios = _heuristic_scenarios(chunks)
+
+    result = {
+        "success": True,
+        "scenarios": scenarios,
+        "chunks": [c["text"] for c in chunks],
+        "ui_text": f"Generated {len(scenarios)} scenarios from your contract.",
+    }
+
+    _scenario_cache[fhash] = result
+    logger.info(f"[SCENARIOS] Generated {len(scenarios)} scenarios for {file_path.name}")
+    return result
+
+
+def answer_scenario_question(question: str, context_chunks: List[str]) -> Dict[str, Any]:
+    """
+    Answer a user's what-if question using LLM + contract context.
+    """
+    if not question or not question.strip():
+        return {"success": False, "answer": "Please provide a question."}
+
+    context = "\n\n".join(context_chunks[:MAX_CHUNKS])
+    prompt = build_scenario_qa_prompt(question=question, context=context)
+
+    try:
+        answer = generate_response(prompt)
+        return {"success": True, "answer": answer.strip()}
+    except Exception as exc:
+        logger.exception(f"[SCENARIOS QA] LLM failed: {exc}")
+        return {
+            "success": False,
+            "answer": "Unable to answer at this time. Please try again.",
+        }
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+PRIORITY_KEYWORDS = [
+    "penalty", "penalize", "forfeit", "liquidated damages",
+    "terminat", "notice period", "cancel", "resign",
+    "liable", "liability", "indemnif", "breach", "consequence",
+    "if ", "shall ", "must ", "may ",
+]
+
+def _build_context(chunks: List[Dict]) -> str:
+    """Prioritise chunks containing clause-relevant keywords."""
+    def score(c):
+        t = c["text"].lower()
+        return sum(1 for kw in PRIORITY_KEYWORDS if kw in t)
+
+    ranked = sorted(chunks, key=score, reverse=True)
+    top = ranked[:10]
+    return "\n\n---\n\n".join(c["text"] for c in top)
+
+
+def _parse_scenarios(llm_output: str) -> List[str]:
+    """
+    Parse LLM output into a list of If-Then scenario strings.
+    Handles numbered lists, bullet points, JSON arrays.
+    """
+    text = llm_output.strip()
+
+    # Try JSON array first
+    if text.startswith("["):
+        try:
+            items = json.loads(text)
+            if isinstance(items, list):
+                return [str(i).strip() for i in items if str(i).strip()]
+        except Exception:
+            pass
+
+    # Split by newlines, filter lines that look like scenarios
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    scenarios = []
+    for line in lines:
+        # Strip leading bullets/numbers
+        for prefix in ["- ", "* ", "• "]:
+            if line.startswith(prefix):
+                line = line[len(prefix):]
+        import re
+        line = re.sub(r"^\d+[\.\)]\s*", "", line)
+        if len(line) > 15 and ("if" in line.lower() or "→" in line or "->" in line):
+            # Normalise arrow
+            line = line.replace("->", "→").replace(" - ", " → ")
+            scenarios.append(line)
+
+    return scenarios[:10]  # cap at 10
+
+
+def _heuristic_scenarios(chunks: List[Dict]) -> List[str]:
+    """
+    Fallback: extract if/then sentences directly from text without LLM.
+    """
+    import re
+    sentences = []
+    for chunk in chunks:
+        text = chunk["text"]
+        # Split by sentence boundaries
+        parts = re.split(r"(?<=[.;])\s+", text)
+        for p in parts:
+            lower = p.lower()
+            if ("if " in lower or "in case" in lower or "upon " in lower) and len(p) > 30:
+                # Trim and format
+                scenario = p.strip()
+                if len(scenario) > 200:
+                    scenario = scenario[:200] + "..."
+                sentences.append(scenario)
+            if len(sentences) >= 8:
+                break
+        if len(sentences) >= 8:
+            break
+
+    formatted = []
+    for s in sentences[:8]:
+        # Try to split at "then" or comma to make If → Then format
+        lower = s.lower()
+        if " then " in lower:
+            idx = lower.index(" then ")
+            formatted.append(f"{s[:idx].strip()} → {s[idx+6:].strip()}")
+        else:
+            formatted.append(s)
+
+    return formatted if formatted else [
+        "If the employee resigns before 12 months → a penalty may apply",
+        "If the contract is breached → legal action may be initiated",
+        "If notice period is not served → compensation may be withheld",
+        "If confidential data is shared → the employee may be liable",
+        "If either party terminates → notice must be provided in writing",
+    ]

@@ -1,0 +1,111 @@
+"""
+api/scenarios.py
+
+Two endpoints:
+  POST /api/scenarios          → upload file, get If-Then scenarios
+  POST /api/scenario-question  → ask a what-if question about the contract
+"""
+from pathlib import Path
+from typing import List, Optional
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from loguru import logger
+from pydantic import BaseModel
+
+from services.scenario_generator import generate_scenarios, answer_scenario_question
+from utils.file_handler import save_upload, delete_file
+
+router = APIRouter(prefix="/api", tags=["scenarios"])
+
+
+# ── Response schemas ──────────────────────────────────────────────────────────
+
+class ScenarioResponse(BaseModel):
+    success: bool
+    scenarios: List[str]
+    chunks: List[str]
+    ui_text: str
+
+
+class ScenarioQARequest(BaseModel):
+    question: str
+    context_chunks: Optional[List[str]] = []
+
+
+class ScenarioQAResponse(BaseModel):
+    success: bool
+    answer: str
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/scenarios",
+    response_model=ScenarioResponse,
+    summary="Generate If-Then scenarios from a contract",
+)
+async def scenarios_endpoint(
+    file: UploadFile = File(..., description="PDF or image contract file"),
+):
+    """
+    Upload a contract (PDF or image).
+    Returns a list of If-Then scenario strings automatically extracted by LLM.
+    """
+    suffix = Path(file.filename or "").suffix.lower()
+    allowed = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
+    if suffix not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported file type '{suffix}'. Allowed: PDF, JPG, PNG, TIFF, BMP, WEBP.",
+        )
+
+    path = await save_upload(file, subfolder="pdfs")
+    logger.info(f"[SCENARIOS] Saved: {path.name}")
+
+    try:
+        result = await run_in_threadpool(generate_scenarios, path)
+    except Exception as exc:
+        logger.exception(f"[SCENARIOS] Pipeline error: {exc}")
+        delete_file(path)
+        raise HTTPException(status_code=500, detail=f"Scenario generation failed: {exc}")
+
+    if not result["success"]:
+        delete_file(path)
+        raise HTTPException(status_code=422, detail=result["ui_text"])
+
+    return ScenarioResponse(
+        success=result["success"],
+        scenarios=result["scenarios"],
+        chunks=result["chunks"],
+        ui_text=result["ui_text"],
+    )
+
+
+@router.post(
+    "/scenario-question",
+    response_model=ScenarioQAResponse,
+    summary="Answer a what-if question using contract context",
+)
+async def scenario_question_endpoint(body: ScenarioQARequest):
+    """
+    Submit a what-if question plus the contract chunks (returned by /scenarios).
+    Returns an LLM-generated answer grounded in the contract text.
+    """
+    if not body.question or not body.question.strip():
+        raise HTTPException(status_code=422, detail="Question cannot be empty.")
+
+    try:
+        result = await run_in_threadpool(
+            answer_scenario_question,
+            body.question.strip(),
+            body.context_chunks or [],
+        )
+    except Exception as exc:
+        logger.exception(f"[SCENARIO QA] Error: {exc}")
+        raise HTTPException(status_code=500, detail=f"QA failed: {exc}")
+
+    return ScenarioQAResponse(
+        success=result["success"],
+        answer=result["answer"],
+    )
