@@ -59,13 +59,13 @@ def extract_pdf_pages(pdf_path: str | Path) -> List[Dict[str, Any]]:
                 # Scanned page — only OCR if PDF has NO extractable text overall
                 logger.debug(f"Page {page_index + 1} has little text ({len(cleaned.strip())} chars) — attempting OCR")
                 try:
-                    from .image_ocr import ocr_image
+                    from .image_ocr import ocr_image_sync
                     page = doc.load_page(page_index)
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                     temp_img = pdf_path.parent / f".ocr_page_{page_index+1}_{pdf_path.stem}.png"
                     pix.save(str(temp_img))
                     try:
-                        ocr_result = ocr_image(temp_img)
+                        ocr_result = ocr_image_sync(temp_img)
                         ocr_text = clean_text(ocr_result.get("text", ""))
                         if ocr_text.strip():
                             pages.append({
@@ -80,3 +80,5 @@ def extract_pdf_pages(pdf_path: str | Path) -> List[Dict[str, Any]]:
 
     logger.info(f"Extracted {len(pages)} non-empty pages from '{pdf_path.name}'")
     return pages
+
+

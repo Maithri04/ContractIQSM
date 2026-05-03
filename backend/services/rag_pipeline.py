@@ -16,7 +16,7 @@ from loguru import logger
 
 from ingestion.pdf_parser import extract_pdf_pages
 from ingestion.document_parser import extract_document_pages
-from ingestion.image_ocr import ocr_image
+from ingestion.image_ocr import ocr_image_sync
 from ingestion.chunker import chunk_pages, chunk_image_text
 from embeddings.text_embedder import text_embedder
 from embeddings.image_embedder import image_embedder
@@ -113,7 +113,7 @@ async def ingest_image(image_path: Path):
     logger.info(f"[IMAGE PIPELINE] Starting ingestion for: {image_path.name}")
 
     yield {"step": 1}
-    ocr_result = await run_in_threadpool(ocr_image, image_path)
+    ocr_result = await run_in_threadpool(ocr_image_sync, image_path)
 
     if not ocr_result["text"].strip():
         logger.warning(f"No text extracted via OCR from {image_path.name}")

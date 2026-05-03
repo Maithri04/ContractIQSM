@@ -1,63 +1,43 @@
 """
 api/scenarios.py
 
-Two endpoints:
-  POST /api/scenarios          → upload file, get If-Then scenarios
-  POST /api/scenario-question  → ask a what-if question about the contract
+POST /api/scenarios
+Accepts a single PDF contract, extracts conditional clauses,
+and returns clickable scenario questions + answers for the frontend.
 """
-from pathlib import Path
-from typing import List, Optional
-
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from loguru import logger
 from pydantic import BaseModel
+from typing import List, Dict, Any
 
-from services.scenario_generator import generate_scenarios, answer_scenario_question
+from services.scenario_generator import generate_scenarios
 from utils.file_handler import save_upload, delete_file
+from llm.generator import llm_generator
 
 router = APIRouter(prefix="/api", tags=["scenarios"])
 
 
-# ── Response schemas ──────────────────────────────────────────────────────────
-
-class ScenarioResponse(BaseModel):
-    success: bool
-    scenarios: List[str]
-    chunks: List[str]
-    ui_text: str
-
-
-class ScenarioQARequest(BaseModel):
-    question: str
-    context_chunks: Optional[List[str]] = []
-
-
-class ScenarioQAResponse(BaseModel):
-    success: bool
-    answer: str
-
-
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-
-@router.post(
-    "/scenarios",
-    response_model=ScenarioResponse,
-    summary="Generate If-Then scenarios from a contract",
-)
+@router.post("/scenarios", summary="Generate interactive scenario Q&A from contract")
 async def scenarios_endpoint(
-    file: UploadFile = File(..., description="PDF or image contract file"),
+    file: UploadFile = File(..., description="PDF or Image contract to generate scenarios from"),
 ):
     """
-    Upload a contract (PDF or image).
-    Returns a list of If-Then scenario strings automatically extracted by LLM.
+    Generate scenario-based questions and answers from a contract.
+
+    Returns
+    -------
+    JSON with:
+    - questions: list of clickable question strings
+    - answers: dict mapping each question to its plain-English answer
+    - ui_text: intro text for the frontend section header
     """
-    suffix = Path(file.filename or "").suffix.lower()
-    allowed = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
-    if suffix not in allowed:
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    allowed_exts = {"pdf", "jpg", "jpeg", "png", "webp", "tiff", "bmp"}
+    if ext not in allowed_exts:
         raise HTTPException(
             status_code=422,
-            detail=f"Unsupported file type '{suffix}'. Allowed: PDF, JPG, PNG, TIFF, BMP, WEBP.",
+            detail=f"Only PDF and Image files are supported. Got: {file.filename}",
         )
 
     path = await save_upload(file, subfolder="pdfs")
@@ -74,38 +54,35 @@ async def scenarios_endpoint(
         delete_file(path)
         raise HTTPException(status_code=422, detail=result["ui_text"])
 
-    return ScenarioResponse(
-        success=result["success"],
-        scenarios=result["scenarios"],
-        chunks=result["chunks"],
-        ui_text=result["ui_text"],
-    )
+    return result
 
+class ScenarioQuestionRequest(BaseModel):
+    question: str
+    context_chunks: List[Dict[str, Any]] = []
 
-@router.post(
-    "/scenario-question",
-    response_model=ScenarioQAResponse,
-    summary="Answer a what-if question using contract context",
-)
-async def scenario_question_endpoint(body: ScenarioQARequest):
-    """
-    Submit a what-if question plus the contract chunks (returned by /scenarios).
-    Returns an LLM-generated answer grounded in the contract text.
-    """
-    if not body.question or not body.question.strip():
-        raise HTTPException(status_code=422, detail="Question cannot be empty.")
-
+@router.post("/scenario-question", summary="Ask a specific scenario question")
+async def scenario_question_endpoint(req: ScenarioQuestionRequest):
     try:
-        result = await run_in_threadpool(
-            answer_scenario_question,
-            body.question.strip(),
-            body.context_chunks or [],
-        )
-    except Exception as exc:
-        logger.exception(f"[SCENARIO QA] Error: {exc}")
-        raise HTTPException(status_code=500, detail=f"QA failed: {exc}")
+        context_text = "\n\n".join([c.get("text", "") for c in req.context_chunks])
+        # If no chunks, fallback
+        if not context_text:
+            context_text = "No contract context provided."
 
-    return ScenarioQAResponse(
-        success=result["success"],
-        answer=result["answer"],
-    )
+        prompt = (
+            "You are a friendly legal assistant helping a non-lawyer understand their contract. "
+            "Answer the user's question using the contract excerpts below. Keep the answer to 1-2 sentences in plain English. "
+            "If the specific answer is not clearly stated in the excerpts, give a helpful general response based on "
+            "what you know about typical contracts — for example, suggest what they should look for, who to ask, "
+            "or what the clause likely means. Never say 'I cannot determine' — always give a useful, friendly response.\n\n"
+            f"Contract Excerpts:\n{context_text}"
+        )
+        
+        answer = await run_in_threadpool(
+            llm_generator.generate,
+            context=context_text,
+            question=prompt + f"\n\nQuestion: {req.question}"
+        )
+        return {"answer": answer}
+    except Exception as exc:
+        logger.exception(f"[SCENARIOS] Q&A failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))

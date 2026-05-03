@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from loguru import logger
 
 from ingestion.pdf_parser      import extract_pdf_pages
-from ingestion.image_ocr       import ocr_image
+from ingestion.image_ocr       import ocr_image_sync as ocr_image
 from ingestion.chunker         import chunk_pages, chunk_image_text
 from ingestion.cleaner         import clean_text
 

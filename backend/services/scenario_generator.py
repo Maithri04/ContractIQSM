@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 from loguru import logger
 
 from ingestion.pdf_parser import extract_pdf_pages
-from ingestion.image_ocr import ocr_image
+from ingestion.image_ocr import ocr_image_sync as ocr_image
 from ingestion.chunker import chunk_pages
 from llm.generator import llm_generator
 
@@ -25,23 +25,27 @@ CONDITIONAL_TRIGGERS = [
     "failure to", "in the event of", "subject to",
 ]
 
-SCENARIO_SYSTEM_PROMPT = """You are a legal contract analyst. Given contract clause excerpts,
-generate exactly 5 practical scenario questions a non-lawyer would ask, and a short plain-English answer for each.
+SCENARIO_SYSTEM_PROMPT = """You are a friendly legal assistant helping a non-lawyer understand their employment contract.
+
+Given contract clause excerpts, generate exactly 5 practical "If-Then" scenario questions a regular person would ask, and a confident, plain-English answer for each based directly on the contract.
 
 Return ONLY valid JSON in this exact format (no markdown, no explanation):
 {
   "questions": ["If you resign before 12 months -> what happens?", "If company terminates -> what happens?"],
   "answers": {
-    "If you resign before 12 months -> what happens?": "You must pay a penalty.",
-    "If company terminates -> what happens?": "There is no penalty."
+    "If you resign before 12 months -> what happens?": "You must repay the joining bonus and serve a 2-month notice period as stated in clause 3.2.",
+    "If company terminates -> what happens?": "The company must give you 60 days written notice and pay your dues up to the last working day."
   }
 }
 
 Rules:
-- Questions MUST start with "If" and use an arrow "->" or ask a what-if question.
-- Answers must be 1-2 sentences max.
-- Use plain language, no legal jargon.
-- Base everything only on the provided clauses."""
+- Questions MUST start with "If" and end with "-> what happens?" or similar.
+- Answers MUST be confident and direct — say what WILL happen, not what "might" happen.
+- Answers must reference specific clause details from the contract (notice periods, amounts, durations).
+- Use plain friendly language — write as if explaining to a friend, not a lawyer.
+- Never say "I cannot determine", "it's unclear", or "you may want to consult".
+- If a clause is clearly stated, state it confidently. If implied, give the most logical interpretation.
+- Keep answers to 1-3 sentences max."""
 
 
 def _extract_conditional_chunks(chunks: List[Dict]) -> List[str]:
@@ -63,8 +67,13 @@ def _build_context(conditional_chunks: List[str]) -> str:
 
 def _parse_llm_json(raw: str) -> Dict:
     """Safely parse JSON from LLM response, stripping any markdown fences."""
-    # Strip ```json ... ``` fences if present
     cleaned = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
+    
+    start = cleaned.find('{')
+    end = cleaned.rfind('}')
+    if start != -1 and end != -1:
+        cleaned = cleaned[start:end+1]
+        
     return json.loads(cleaned)
 
 
@@ -111,6 +120,16 @@ def _fallback_qa(chunks: List[Dict]) -> Dict:
         )
 
     return {"questions": questions, "answers": qa}
+
+
+def _empty_response(reason: str) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "scenarios": [],
+        "answers": {},
+        "chunks": [],
+        "ui_text": reason,
+    }
 
 
 def generate_scenarios(file_path: Path) -> Dict[str, Any]:
@@ -190,13 +209,4 @@ def generate_scenarios(file_path: Path) -> Dict[str, Any]:
         "answers": answers,
         "chunks": chunks,
         "ui_text": ui_text,
-    }
-
-
-    return {
-        "success": False,
-        "scenarios": [],
-        "answers": {},
-        "chunks": [],
-        "ui_text": reason,
     }

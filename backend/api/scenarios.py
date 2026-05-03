@@ -69,9 +69,13 @@ async def scenario_question_endpoint(req: ScenarioQuestionRequest):
             context_text = "No contract context provided."
 
         prompt = (
-            "You are a helpful legal assistant. Answer the user's scenario-based question "
-            "using ONLY the following contract excerpts. Keep the answer to 1-2 sentences. "
-            "If the answer is not in the excerpts, say 'I cannot determine that from the provided text.'\n\n"
+            "You are a friendly legal assistant helping a non-lawyer understand their contract. "
+            "Answer the user's question directly and confidently based on the contract excerpts below. "
+            "Be warm, clear, and specific — mention actual clause details like notice periods, amounts, or durations when available. "
+            "Write like you're explaining to a friend: simple words, no jargon, no hedging. "
+            "If the contract doesn't explicitly cover the question, give your best interpretation based on what IS there, "
+            "and suggest what they should do next (e.g. 'check clause 4.1' or 'ask your HR team'). "
+            "Never refuse to answer. Keep it to 2-3 sentences max.\n\n"
             f"Contract Excerpts:\n{context_text}"
         )
         
