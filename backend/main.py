@@ -20,6 +20,7 @@ from api.compare import router as compare_router
 from api.risk import router as risk_router
 from api.scenarios import router as scenarios_router
 from api.ask import router as ask_router
+from api.history import router as history_router
 from models.schemas import HealthResponse, ResetResponse
 from db.text_vector_store import get_text_store
 from db.image_vector_store import get_image_store
@@ -57,6 +58,7 @@ app.include_router(ask_router)
 app.include_router(compare_router)
 app.include_router(risk_router)
 app.include_router(scenarios_router)
+app.include_router(history_router)
 
 
 @app.exception_handler(Exception)

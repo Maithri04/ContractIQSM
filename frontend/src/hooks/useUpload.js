@@ -1,6 +1,7 @@
 import { useAppContext } from "../context/AppContext";
 import { uploadFiles }   from "../api/uploadApi";
 import { getRiskScore }  from "../api/riskApi";
+import { updateHistory } from "../api/historyApi";
 import { useProcessing } from "./useProcessing";
 
 export function useUpload() {
@@ -41,6 +42,12 @@ export function useUpload() {
       try {
         const risk = await getRiskScore(pdfFile);
         setRiskResult(risk);
+        if (res?.result?.file_hash) {
+          await updateHistory(res.result.file_hash, {
+            risk_level: risk.data?.level || "UNKNOWN",
+            analysis: risk
+          });
+        }
       } catch (_) {
         // non-fatal — risk score optional
       }

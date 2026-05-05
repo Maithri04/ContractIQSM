@@ -143,6 +143,7 @@ def score_contract(file_path: Path) -> Dict[str, Any]:
             "breakdown": breakdown,
         },
         "ui_text": ui_text,
+        "summary": ui_text,
     }
 
 
@@ -163,4 +164,5 @@ def _empty_response(reason: str) -> Dict[str, Any]:
             "breakdown": [],
         },
         "ui_text": reason,
+        "summary": reason,
     }

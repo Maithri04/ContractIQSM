@@ -1,0 +1,40 @@
+{
+  "file_hash": "2a3a67f6968f75fbe901bd5cccd242d15e081a96acf5e857f0edcea92e9e2435",
+  "file_name": "Image to pdf 29-Apr-2026.pdf",
+  "file_type": "pdf",
+  "ext": ".pdf",
+  "uploaded_at": "2026-05-05T03:58:27.466192",
+  "risk_level": "MEDIUM",
+  "analysis": {
+    "success": true,
+    "data": {
+      "score": 6,
+      "level": "MEDIUM",
+      "breakdown": [
+        {
+          "clause": "Penalty Clause",
+          "weight": 3,
+          "found": true,
+          "excerpt": "ON 4.1 Either Party may terminate this Agreement by providing 60 days written notice to the other Party: 4.2 If the Employee resigns or is found in breach of this Agreement before completing 12 months of continuous service_ the Employee shall pay pen...",
+          "contribution": 3
+        },
+        {
+          "clause": "Liability Clause",
+          "weight": 3,
+          "found": false,
+          "excerpt": "Not detected in this contract.",
+          "contribution": 0
+        },
+        {
+          "clause": "Termination Clause",
+          "weight": 2,
+          "found": true,
+          "excerpt": "EMPLOYMENT AGREEMENT This Employment Agreement (\"Agreement\"= is made and entered into on this Ist day of May, 2024 , by and between: Company: ABC Tech Solutions Pvt. Ltd._ having its registered office at 123_ Business Park Bangalore 560001, Karnataka...",
+          "contribution": 2
+        }
+      ]
+    },
+    "ui_text": "This contract has a MEDIUM risk (6/10). Major risks include: Penalty Clause, Termination Clause. The following clauses were not found: Liability Clause. The termination condition is moderate.",
+    "summary": "This contract has a MEDIUM risk (6/10). Major risks include: Penalty Clause, Termination Clause. The following clauses were not found: Liability Clause. The termination condition is moderate."
+  }
+}

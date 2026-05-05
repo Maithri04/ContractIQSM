@@ -18,6 +18,7 @@ from loguru import logger
 from models.schemas import UploadResponse
 from services.rag_pipeline import ingest_pdf, ingest_image, ingest_document
 from utils.file_handler import save_upload, delete_file
+from api.history import save_to_history
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
@@ -124,6 +125,22 @@ async def upload_documents(
             "heuristic_risk": combined_risk,
             "warnings": warnings,
         }
+        try:
+            with open("history_debug.log", "a") as f:
+                f.write(f"Attempting to save to history. main_path={main_path}, image_path={image_path}\n")
+            if main_path:
+                name_to_use = getattr(pdf_file, "filename", main_path.name) if pdf_file else main_path.name
+                file_hash = save_to_history(main_path, name_to_use, risk_level=combined_risk)
+                final_result["file_hash"] = file_hash
+                with open("history_debug.log", "a") as f: f.write(f"Saved main_path to history: {name_to_use}\n")
+            elif image_path:
+                name_to_use = getattr(image_file, "filename", image_path.name) if image_file else image_path.name
+                file_hash = save_to_history(image_path, name_to_use, risk_level=combined_risk)
+                final_result["file_hash"] = file_hash
+                with open("history_debug.log", "a") as f: f.write(f"Saved image_path to history: {name_to_use}\n")
+        except Exception as e:
+            with open("history_debug.log", "a") as f: f.write(f"Exception in save_to_history: {e}\n")
+            logger.error(f"Failed to save to history: {e}")
         
         yield json.dumps({"result": final_result}) + "\n"
 
